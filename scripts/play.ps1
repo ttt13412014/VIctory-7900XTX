@@ -1,5 +1,7 @@
-# Starts the title with the settings this fork is played with (README.md, "How to run it").
+# Starts the title with the settings this fork is played with (README.md, "Cómo ejecutarlo").
+# Victory is already installed. This uses that victory.exe when this tree has not been built.
 #   scripts\play.ps1 -Exe <path of your own copy's executable>
+# -Victory      a victory.exe to use (else target\<Build>\victory.exe if it exists, else PATH)
 # -Safe         without the newer, faster ways (the first thing to try when something is wrong)
 # -RayTracing   the title's own ray-traced indirect light: lit interiors, about a third slower
 # -Build        target\diag (the default, the build all measurements are of) or target\release
@@ -7,6 +9,7 @@
 # Run it from a normal window, not as administrator: the driver then keeps its shader cache elsewhere.
 param(
     [Parameter(Mandatory)][string]$Exe,
+    [string]$Victory,
     [switch]$Safe,
     [switch]$RayTracing,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
@@ -19,15 +22,29 @@ $settings = @{
     VICTORY_SHOW_AFTER = '1'; VICTORY_AMBIENT = '0.8'; VICTORY_D3D12_DRED = 'light'; VICTORY_SKIP_PIPELINES = 'none'
 }
 if ($Safe) {
+    # 1 MiB is the previous floor on a 24 GB card. Leave MIN_KB unset.
     $settings.VICTORY_UNDER_WIDE = '0'; $settings.VICTORY_LAND_ECHO = '0'
+    $settings.VICTORY_CARD_BUFFERS_MIN_MB = '1'
 } else {
     $settings.VICTORY_THIN = '1'; $settings.VICTORY_JOIN_PARTS = '8'; $settings.VICTORY_UPLOAD_AHEAD = '1'
+    # Copies under 1 MiB stay on the card (RX 7900 XTX). The binary of this tree
+    # does the same on its own when the local budget is at least 20 GiB.
+    $settings.VICTORY_CARD_BUFFERS_MIN_KB = '64'
 }
 if ($RayTracing) { $settings.VICTORY_BVH_BUILDER = '1' }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 
-$victory = Join-Path $PSScriptRoot "..\target\$Build\victory.exe"
-if (-not (Test-Path $victory)) { Write-Host "No $victory. Build it first (README.md)."; return }
+$built = Join-Path $PSScriptRoot "..\target\$Build\victory.exe"
+if ($Victory) {
+    $victory = $Victory
+} elseif (Test-Path $built) {
+    $victory = $built
+} else {
+    $onPath = Get-Command victory -ErrorAction SilentlyContinue
+    if (-not $onPath) { Write-Host "No victory.exe in target\$Build or on PATH. Pass -Victory."; return }
+    $victory = $onPath.Source
+}
+if (-not (Test-Path $victory)) { Write-Host "No $victory."; return }
 if (-not (Test-Path $Exe)) { Write-Host "No $Exe."; return }
 # (Other settings left over in this window go; where your files are stays.)
 $paths = 'VICTORY_CONFIG', 'VICTORY_GAME_DIR', 'VICTORY_CACHE_DIR', 'VICTORY_DATA_DIR'

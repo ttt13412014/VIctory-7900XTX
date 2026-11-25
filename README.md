@@ -36,33 +36,51 @@ What is known to be wrong:
   pipelines (`victory warm` makes them ahead).
 - Recording a frame in the world makes the title's own watchdog end it.
 
-## How to run it
+## Cómo ejecutarlo
 
-You need Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader
-model 6.6 and mesh shaders, Rust (the toolchain is pinned), the MSVC build
-tools, and your own dump of the title.
+VIctory ya está instalado en el PC. No hace falta instalar de nuevo el
+compilador ni el juego. `scripts\play.ps1` usa el `victory.exe` de esta
+carpeta (`target\diag` o, con `-Build release`, `target\release`) si existe
+y, si no, el que esté en el PATH. `-Victory` señala otro binario. La caché
+y las partidas siguen en `%LOCALAPPDATA%\victory`, la misma de esa
+instalación, salvo que `victory.toml` o `VICTORY_CACHE_DIR` /
+`VICTORY_DATA_DIR` indiquen otra ruta. El ejecutable del juego es el de tu
+copia. Si hace falta un `victory.toml`, parte de `victory.example.toml` y
+deja las rutas fuera de este repositorio.
 
 ```powershell
-git clone https://github.com/avatarmanz/VIctory-7900XTX
-cd VIctory-7900XTX
-copy victory.example.toml victory.toml      # then set your paths, outside this folder
+scripts\play.ps1 -Exe <ruta del ejecutable de tu copia>
+```
+
+Ese perfil es el medido en la RX 7900 XTX. Además de las vías rápidas de
+este fork, las copias de búferes del juego van a la memoria de la tarjeta
+desde 64 KiB (`VICTORY_CARD_BUFFERS_MIN_KB`). Un binario compilado de este
+árbol hace lo mismo solo, cuando el presupuesto local de la tarjeta es de
+al menos 20 GiB. No toca relojes ni voltajes. Para volver al suelo anterior
+de 1 MiB: `-Safe`, o `-More @{VICTORY_CARD_BUFFERS_MIN_MB='1'}`.
+
+`-Safe` también deja fuera `VICTORY_THIN`, `VICTORY_JOIN_PARTS` y
+`VICTORY_UPLOAD_AHEAD`. Pruébalo primero si algo se ve mal. `-RayTracing`
+enciende la luz indirecta con rayos del propio juego (interiores más
+claros, cerca de un tercio más lento).
+
+La primera vez con un driver o una build nuevos, antes de jugar (se puede
+cortar y seguir luego):
+
+```powershell
+victory shaders <archivos de shaders>
+victory warm --used
+```
+
+Si quieres el binario de este árbol en lugar del que ya está instalado:
+
+```powershell
 cargo build --locked --profile diag -p victory --features diagnostics
-scripts\play.ps1 -Exe <path of your copy's executable>
 ```
 
-`scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
-something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
-
-Before the first run, ahead of time (both can be stopped and go on later):
-
-```powershell
-target\diag\victory.exe shaders <the shader archives>   # every shader translated, minutes
-target\diag\victory.exe warm --used                     # pipelines earlier runs drew with, for a new driver or build
-```
-
-Commands, debugging switches and upstream's own description:
-[docs/README-fxceless.md](docs/README-fxceless.md). Every `VICTORY_...` switch is
-described in a comment where it is read.
+Comandos, interruptores de depuración y la descripción de upstream:
+[docs/README-fxceless.md](docs/README-fxceless.md). Cada variable `VICTORY_...`
+está explicada en el comentario donde se lee.
 
 ## What is different here
 

@@ -192,6 +192,34 @@ fn default_card_limits_mb(local_vram_budget: Option<u64>) -> (u64, u64) {
     }
 }
 
+/// Floor in bytes after [`resolve_card_limits`].
+///
+/// `VICTORY_CARD_BUFFERS_MIN_KB` (after fxceless c36971b2) wins: it is the
+/// least size in KiB, so the floor can sit under 1 MiB. `64` is every title
+/// buffer. Copies under 1 MiB are nearly all of them and few bytes; in the
+/// PC's memory every load, store and atomic a shader does on them crosses
+/// the bus.
+///
+/// With no KiB override and no `VICTORY_CARD_BUFFERS_MIN_MB`, a local budget
+/// of at least 20 GiB (RX 7900 XTX, 24 GB) uses that 64 KiB floor. Smaller
+/// budgets keep [`resolve_card_limits`]'s MiB floor. `MIN_MB` restores a
+/// coarser floor on a large card (`1` is the previous 24 GB default).
+fn card_min_bytes(
+    resolved_min: u64,
+    local_vram_budget: Option<u64>,
+    min_mb_override: Option<u64>,
+    min_kb_override: Option<u64>,
+) -> u64 {
+    if let Some(kib) = min_kb_override.filter(|kib| *kib > 0) {
+        return kib << 10;
+    }
+    const TWENTY_GIB: u64 = 20 << 30;
+    if min_mb_override.is_none() && local_vram_budget.is_some_and(|budget| budget >= TWENTY_GIB) {
+        return 64 << 10;
+    }
+    resolved_min
+}
+
 /// Resolve `(min_bytes, max_bytes)` from the adapter's local VRAM budget and
 /// optional explicit MiB overrides from `VICTORY_CARD_BUFFERS_MIN_MB` /
 /// `VICTORY_CARD_BUFFERS_MB`.
@@ -213,27 +241,24 @@ fn resolve_card_limits(
 /// `VICTORY_CARD_BUFFERS_MIN_MB` and `VICTORY_CARD_BUFFERS_MB`.
 /// Defaults scale with the adapter's local VRAM budget (16 MiB / 512 MiB on
 /// `<= 12 GiB` budgets, 4 MiB / 2048 MiB on 16 GB cards, 1 MiB / up to 8192 MiB
-/// on `>= 20 GiB` budgets), and explicit env vars always override.
+/// on `>= 20 GiB` budgets). On that last tier the floor is then 64 KiB
+/// ([`card_min_bytes`]): an RX 7900 XTX has the room, and the smaller copies
+/// were still read across the bus. Explicit env vars always override.
 fn card_limits() -> (u64, u64) {
     static LIMITS: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
     *LIMITS.get_or_init(|| {
         let env_mb = |name: &str| std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok());
+        let min_mb = env_mb("VICTORY_CARD_BUFFERS_MIN_MB");
+        let min_kb = std::env::var("VICTORY_CARD_BUFFERS_MIN_KB")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok());
         let vram_budget = crate::host::host().and_then(|h| h.video_memory()).map(|[budget, ..]| budget);
-        let (mut min_bytes, max_bytes) = resolve_card_limits(
+        let (resolved_min, max_bytes) = resolve_card_limits(
             vram_budget,
-            env_mb("VICTORY_CARD_BUFFERS_MIN_MB"),
+            min_mb,
             env_mb("VICTORY_CARD_BUFFERS_MB"),
         );
-        // `VICTORY_CARD_BUFFERS_MIN_KB` (after fxceless c36971b2) says the
-        // least size in KiB, so that it can go under 1 MiB: 64 is every title
-        // buffer. Copies under 1 MiB are nearly all there are and few bytes;
-        // in the PC's memory every load, store and atomic a shader does on
-        // them crosses the bus.
-        if let Some(kib) = std::env::var("VICTORY_CARD_BUFFERS_MIN_KB").ok().and_then(|v| v.trim().parse::<u64>().ok())
-            && kib > 0
-        {
-            min_bytes = kib << 10;
-        }
+        let mut min_bytes = card_min_bytes(resolved_min, vram_budget, min_mb, min_kb);
         if card_all() {
             min_bytes = 0;
         }
@@ -5419,8 +5444,8 @@ pub(crate) fn exact_line(frames: f64) {
 #[cfg(test)]
 mod window_tests {
     use super::{
-        WINDOW, cover, default_card_limits_mb, grid, holder, longest_tail, resolve_card_limits,
-        tail_of, window_of,
+        WINDOW, card_min_bytes, cover, default_card_limits_mb, grid, holder, longest_tail,
+        resolve_card_limits, tail_of, window_of,
     };
 
     #[test]
@@ -5451,6 +5476,34 @@ mod window_tests {
         assert_eq!(resolve_card_limits(Some(12 * GIB), Some(0), Some(1024)), (MIB, 1024 * MIB));
         assert_eq!(resolve_card_limits(None, Some(u64::MAX), Some(u64::MAX)), (u64::MAX, u64::MAX));
         assert_eq!(resolve_card_limits(None, None, None), (16 * MIB, 512 * MIB));
+    }
+
+    #[test]
+    fn large_vram_floor_is_64_kib_unless_overridden() {
+        const GIB: u64 = 1 << 30;
+        const MIB: u64 = 1 << 20;
+        let floor = |budget: Option<u64>| {
+            let (resolved, _) = resolve_card_limits(budget, None, None);
+            card_min_bytes(resolved, budget, None, None)
+        };
+        // RX 7900 XTX class (>= 20 GiB budget): small title buffers stay on the card.
+        assert_eq!(floor(Some(20 * GIB)), 64 << 10);
+        assert_eq!(floor(Some(24 * GIB)), 64 << 10);
+        // Smaller budgets keep the MiB floors from `default_card_limits_mb`.
+        assert_eq!(floor(Some(16 * GIB)), 4 * MIB);
+        assert_eq!(floor(Some(8 * GIB)), 16 * MIB);
+        assert_eq!(floor(None), 16 * MIB);
+        let (resolved, _) = resolve_card_limits(Some(24 * GIB), Some(1), None);
+        assert_eq!(card_min_bytes(resolved, Some(24 * GIB), Some(1), None), MIB);
+        assert_eq!(
+            card_min_bytes(resolved, Some(24 * GIB), None, Some(128)),
+            128 << 10
+        );
+        // A zero KiB override is ignored, so the 24 GB floor still applies.
+        assert_eq!(
+            card_min_bytes(resolved, Some(24 * GIB), None, Some(0)),
+            64 << 10
+        );
     }
 
     /// An ask that may take any window takes the longest that holds all of
